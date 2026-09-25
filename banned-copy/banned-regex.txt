@@ -1,0 +1,5 @@
+(?i)\b(guaranteed\s+#?1|overnight\s+results|instant\s+rankings?)\b
+(?i)\b(limited\s+(time|offer|slots?)|only\s+\d+\s+left|act\s+now|hurry)\b
+(?i)\bleverage\b
+\p{Extended_Pictographic}
+(?i)\b(gradient(-mesh)?|glassmorphism|glow-up)\b
