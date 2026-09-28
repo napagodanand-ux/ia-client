@@ -1,9 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSupabaseEnv } from "./lib/supabase/env";
 import { updateSession } from "./lib/supabase/middleware";
+import { hasStaffRole, isMfaEnrolled } from "./lib/auth/staff-role";
 
 const PORTAL_LOGIN_PATH = "/portal/login";
 const PORTAL_HOME_PATH = "/portal";
+const ENROL_PATH = "/enrol-mfa";
 const HEALTH_PATH = "/api/health";
 
 /**
@@ -16,8 +18,10 @@ const HEALTH_PATH = "/api/health";
  *   anonymous visitors never see portal internals (spec §3).
  * - /portal and everything under it except /portal/login requires a
  *   server-validated session; without one the request redirects to
- *   /portal/login. MFA/step-up gating arrives with the D-11 migration —
- *   this gate is session presence only.
+ *   /portal/login. /enrol-mfa requires a session and is excluded from the
+ *   enrolment bounce below.
+ * - D-11 §1: staff-role holders without completed app-MFA are restricted to
+ *   /enrol-mfa. Client-only roles pass through unaffected.
  * - Missing Supabase env fails closed to the login redirect on protected
  *   routes while public routes keep working.
  */
@@ -30,8 +34,9 @@ export async function middleware(request: NextRequest) {
 
   const isPortalLogin = pathname === PORTAL_LOGIN_PATH;
   const isPortalArea = pathname === PORTAL_HOME_PATH || pathname.startsWith("/portal/");
+  const isEnrol = pathname === ENROL_PATH;
 
-  if (!isPortalArea && !isPortalLogin) {
+  if (!isPortalArea && !isPortalLogin && !isEnrol) {
     return NextResponse.next();
   }
 
@@ -63,6 +68,20 @@ export async function middleware(request: NextRequest) {
     const login = request.nextUrl.clone();
     login.pathname = PORTAL_LOGIN_PATH;
     return NextResponse.redirect(login);
+  }
+
+  // D-11 §1: staff-role holders without completed app-MFA are restricted to
+  // /enrol-mfa (+ logout). Client-only roles pass through unaffected.
+  if (isPortalArea && !isEnrol) {
+    const staff = await hasStaffRole(userId);
+    if (staff) {
+      const enrolled = await isMfaEnrolled(userId);
+      if (!enrolled) {
+        const enrol = request.nextUrl.clone();
+        enrol.pathname = ENROL_PATH;
+        return NextResponse.redirect(enrol);
+      }
+    }
   }
 
   return response;
