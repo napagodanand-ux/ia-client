@@ -11,13 +11,13 @@ LITERALS="$1"
 shift
 SCOPE=("$@")
 if command -v rg >/dev/null 2>&1; then
-  rg -in -f "$LITERALS" "${SCOPE[@]}"
+  rg -inF -f "$LITERALS" "${SCOPE[@]}"
   rc=$?
   if [ $rc -eq 0 ]; then echo "BANNED-COPY: match found (CI FAIL)"; exit 1; fi
   if [ $rc -eq 1 ]; then echo "BANNED-COPY: clean (CI PASS)"; exit 0; fi
   echo "BANNED-COPY: rg error rc=$rc"; exit 2
 else
-  grep -rni -f "$LITERALS" "${SCOPE[@]}"
+  grep -rniF -f "$LITERALS" "${SCOPE[@]}"
   rc=$?
   if [ $rc -eq 0 ]; then echo "BANNED-COPY: match found (CI FAIL)"; exit 1; fi
   if [ $rc -eq 1 ]; then echo "BANNED-COPY: clean (CI PASS)"; exit 0; fi

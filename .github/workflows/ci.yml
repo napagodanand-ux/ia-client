@@ -24,9 +24,29 @@ jobs:
       - run: pnpm exec playwright test --list
       - name: banned-copy literals
         run: bash scripts/banned-copy-check.sh banned-copy/banned-literals.txt app components lib
+      - name: install ripgrep (banned-copy gates)
+        run: |
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+          fi
+          rg --version
       - name: banned-copy regex
         run: |
-          if rg --pcre2 -in -f banned-copy/banned-regex.txt app components lib; then
+          set -u
+          set +e
+          if ! command -v rg >/dev/null 2>&1; then
+            echo "BANNED-COPY-REGEX: rg missing (CI FAIL)" >&2
+            exit 2
+          fi
+          rg --pcre2 -in -f banned-copy/banned-regex.txt app components lib
+          rc=$?
+          if [ $rc -eq 0 ]; then
             echo "BANNED-COPY-REGEX: match found (CI FAIL)" >&2
             exit 1
           fi
+          if [ $rc -eq 1 ]; then
+            echo "BANNED-COPY-REGEX: clean (CI PASS)"
+            exit 0
+          fi
+          echo "BANNED-COPY-REGEX: scanner error rc=$rc (CI FAIL)" >&2
+          exit 2
