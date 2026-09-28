@@ -1,8 +1,9 @@
 /**
  * Lockout transition table (W2 / REQ-BP-05-04, A-15 carve-out).
- * Pure logic — the login action supplies the row and persists the result.
- * "5 fails → 15-min lock", server-enforced; failures >15 min apart never
- * accumulate (stale windows reset).
+ * Pure logic — unit-tested as the semantic spec. Production writes go through
+ * the atomic private.record_login_failure RPC (read-modify-write in the action
+ * loses updates under concurrency — proven live). Semantics must stay
+ * identical in both places: change both, re-run the concurrent probe.
  */
 
 export const MAX_FAILS = 5;
@@ -54,7 +55,13 @@ export function nextFailState(row: LockoutRow | null, now: number): FailOutcome 
   return {
     fail_count,
     window_start: row.window_start,
+    // Lock only on crossing; normalize any expired value to NULL (mirrors
+    // private.record_login_failure — change both, re-run the concurrent probe).
     locked_until:
-      fail_count >= MAX_FAILS ? new Date(now + LOCK_MS).toISOString() : row.locked_until,
+      fail_count >= MAX_FAILS
+        ? new Date(now + LOCK_MS).toISOString()
+        : row.locked_until && Date.parse(row.locked_until) > now
+          ? row.locked_until
+          : null,
   };
 }

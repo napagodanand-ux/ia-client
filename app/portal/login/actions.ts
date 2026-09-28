@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { validateLogin } from "@/lib/auth/validation";
-import { isLocked, nextFailState } from "@/lib/auth/lockout";
+import { isLocked } from "@/lib/auth/lockout";
 
 export interface LoginState {
   error?: string;
@@ -37,26 +37,15 @@ async function readLockout(email: string) {
   }
 }
 
-async function writeLockout(
-  email: string,
-  row: {
-    fail_count: number;
-    window_start: string;
-    locked_until: string | null;
-  },
-) {
+async function writeLockout(email: string) {
+  // Atomic server-side increment (private.record_login_failure): concurrent
+  // failures serialize on the row lock, so no increment is ever lost.
+  // Semantics mirror lib/auth/lockout.ts nextFailState — change both.
   try {
     const admin = createAdminClient();
-    const { error } = await admin.from("login_attempts").upsert(
-      {
-        email,
-        fail_count: row.fail_count,
-        window_start: row.window_start,
-        locked_until: row.locked_until,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "email" },
-    );
+    const { error } = await admin.rpc("record_login_failure", {
+      p_email: email,
+    });
     if (error) {
       console.warn("lockout write failed; continuing.");
     }
@@ -92,7 +81,7 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
   const supabase = await createClient();
   const { error } = await supabase.auth.signInWithPassword(parsed.value);
   if (error) {
-    await writeLockout(parsed.value.email, nextFailState(lockRow, Date.now()));
+    await writeLockout(parsed.value.email);
     return { error: GENERIC };
   }
   await clearLockout(parsed.value.email);
