@@ -22,6 +22,9 @@ jobs:
       - run: pnpm exec prettier --check .
       - run: pnpm exec vitest run
       - run: pnpm exec playwright test --list
+      - run: pnpm exec next build
+      - name: bundle secret grep (.next)
+        run: bash scripts/bundle-grep-check.sh .next
       - name: banned-copy literals
         run: bash scripts/banned-copy-check.sh banned-copy/banned-literals.txt app components lib
       - name: install ripgrep (banned-copy gates)
