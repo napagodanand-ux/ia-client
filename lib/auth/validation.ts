@@ -103,10 +103,13 @@ export function validateSignup(
   if (errors.length > 0) {
     return { ok: false, errors };
   }
+  // Canonical form: trimmed + lowercased (no citext extension on the project;
+  // every email-keyed read/write — lockout rows, request rows, RPC joins —
+  // must use this form).
   return {
     ok: true,
     value: {
-      email: (email as string).trim(),
+      email: (email as string).trim().toLowerCase(),
       password: password as string,
       orgName: (orgName as string).trim(),
       businessNeed: (businessNeed as string).trim(),
@@ -125,5 +128,5 @@ export function validateLogin(
   if (validateEmail(email) !== null || password.length === 0) {
     return { ok: false };
   }
-  return { ok: true, value: { email: email.trim(), password } };
+  return { ok: true, value: { email: email.trim().toLowerCase(), password } };
 }

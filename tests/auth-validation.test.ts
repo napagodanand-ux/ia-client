@@ -73,4 +73,21 @@ describe("auth validation", () => {
       value: { email: "a@b.co", password: "whatever-12-long" },
     });
   });
+
+  test("emails canonicalize to lowercase (no citext on project)", () => {
+    const r = validateSignup({
+      email: "Founder@Example.CO",
+      password: "correct-horse-12",
+      orgName: "Example Co",
+      businessNeed: "We need a content squad for launch.",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.email).toBe("founder@example.co");
+    }
+    expect(validateLogin("User@X.Co", "whatever-12-long")).toEqual({
+      ok: true,
+      value: { email: "user@x.co", password: "whatever-12-long" },
+    });
+  });
 });
