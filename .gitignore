@@ -11,4 +11,9 @@ dist/
 # OS
 .DS_Store
 
+# Test artifacts
+test-results/
+playwright-report/
+coverage/
+
 *.tsbuildinfo
