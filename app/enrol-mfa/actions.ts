@@ -10,8 +10,6 @@ export interface EnrolState {
   qrCode?: string;
   secret?: string;
   uri?: string;
-  needsSecond?: boolean;
-  codes?: string[];
   error?: string;
 }
 
@@ -48,6 +46,118 @@ async function cleanupUnverifiedFactors(): Promise<void> {
   } catch {
     // Fallback path uses a unique friendly name instead.
   }
+}
+
+/** Whether the app-side enrolment row exists for the caller. */
+async function hasEnrolmentRow(): Promise<boolean> {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return false;
+    }
+    const admin = createAdminClient();
+    const { data } = await admin
+      .from("mfa_enrolments")
+      .select("enrolled_at")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    return !!data?.enrolled_at;
+  } catch {
+    return false;
+  }
+}
+
+/** Page state: clean start, resume-interrupted, or fully done. */
+export async function enrolmentPageState(): Promise<"start" | "resume" | "done"> {
+  const [verified, row] = await Promise.all([hasVerifiedTotp(), hasEnrolmentRow()]);
+  if (row) {
+    return "done";
+  }
+  if (verified) {
+    // Native factor verified but the app flow never completed (interrupted
+    // enrolment): offer completion instead of a dead end.
+    return "resume";
+  }
+  return "start";
+}
+
+async function writeEnrolmentAndCodes(
+  userId: string,
+): Promise<{ codes?: string[]; error?: string }> {
+  let pairs: RecoveryCodePair[];
+  const t0 = Date.now();
+  try {
+    pairs = await generateRecoveryCodes(10);
+  } catch {
+    return { error: GENERIC };
+  }
+  try {
+    const admin = createAdminClient();
+    const { error: enrolError } = await admin
+      .from("mfa_enrolments")
+      .upsert(
+        { user_id: userId, enrolled_at: new Date().toISOString() },
+        { onConflict: "user_id" },
+      );
+    if (enrolError) {
+      return { error: GENERIC };
+    }
+    const { error: codesError } = await admin.from("recovery_code_hashes").insert(
+      pairs.map((p) => ({
+        user_id: userId,
+        algo: "argon2id",
+        code_hash: p.hash,
+        used_at: null,
+        reset_batch: null,
+      })),
+    );
+    if (codesError) {
+      return { error: GENERIC };
+    }
+  } catch {
+    return { error: GENERIC };
+  }
+  return { codes: pairs.map((p) => p.code) };
+}
+
+/**
+ * Interrupted-enrolment verify: one fresh code against the already verified
+ * factor, then redirect to completion (redirect-based delivery — see
+ * verifyEnrol note).
+ */
+export async function resumeEnrolment(_prev: EnrolState, formData: FormData): Promise<EnrolState> {
+  const code = formData.get("code");
+  if (typeof code !== "string") {
+    return { error: GENERIC };
+  }
+  let factorId: string | null = null;
+  try {
+    const supabase = await createClient();
+    const { data: factors, error: listError } = await supabase.auth.mfa.listFactors();
+    const factor = factors?.totp.find((f) => f.status === "verified");
+    if (listError || !factor) {
+      return { error: GENERIC };
+    }
+    const challenge = await supabase.auth.mfa.challenge({ factorId: factor.id });
+    if (challenge.error || !challenge.data) {
+      return { error: GENERIC };
+    }
+    const verified = await supabase.auth.mfa.verify({
+      factorId: factor.id,
+      challengeId: challenge.data.id,
+      code: code.trim().replace(/\s/g, ""),
+    });
+    if (verified.error) {
+      return { error: "Invalid code. Try again." };
+    }
+    factorId = factor.id;
+  } catch {
+    return { error: GENERIC };
+  }
+  redirect(`/enrol-mfa/complete?factor=${encodeURIComponent(factorId as string)}`);
 }
 
 /** Step 1: create the TOTP factor, return QR material for scanning. */
@@ -124,10 +234,26 @@ async function hasVerifiedTotp(): Promise<boolean> {
   }
 }
 
+/** Fetch the caller's factor by id; null unless it exists, is TOTP, and is
+ *  caller-owned. Verified-status is checked by callers that need it. */
+async function getOwnFactor(factorId: string) {
+  try {
+    const supabase = await createClient();
+    const { data } = await supabase.auth.mfa.listFactors();
+    const factor = data?.totp.find((f) => f.id === factorId);
+    return factor ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Steps 2+3: verify two consecutive codes, then complete enrolment:
- * write mfa_enrolments, generate + store recovery-code hashes, return the
- * plaintext codes EXACTLY ONCE (never logged, never emailed, never stored).
+ * Steps 2+3 as REDIRECTS (never action state): post-verify action state does
+ * not reliably reach the client (rotation-bearing responses are superseded
+ * by a fresh server render), while redirects apply 1:1. Round 1 success
+ * routes to the round-2 form; round 2 success routes to the completion page,
+ * which performs the slow hash+store during its own server render (with a
+ * loading state) and is idempotent via the enrolment row.
  */
 export async function verifyEnrol(_prev: EnrolState, formData: FormData): Promise<EnrolState> {
   const factorId = formData.get("factorId");
@@ -136,53 +262,18 @@ export async function verifyEnrol(_prev: EnrolState, formData: FormData): Promis
   if (typeof factorId !== "string" || typeof code !== "string") {
     return { error: GENERIC };
   }
+  const factor = await getOwnFactor(factorId);
+  if (!factor) {
+    return { error: GENERIC };
+  }
   const first = await verifyCode(factorId, code);
   if (!first.ok) {
     return { factorId, error: "Invalid code. Try again." };
   }
   if (round !== "2") {
-    return { factorId, needsSecond: true };
+    redirect(`/enrol-mfa?step=2&factor=${encodeURIComponent(factorId)}`);
   }
-  if (!(await hasVerifiedTotp())) {
-    return { error: GENERIC };
-  }
-  const userId = await requireUserId();
-  if (!userId) {
-    return { error: GENERIC };
-  }
-  let pairs: RecoveryCodePair[];
-  try {
-    pairs = await generateRecoveryCodes(10);
-  } catch {
-    return { error: GENERIC };
-  }
-  try {
-    const admin = createAdminClient();
-    const { error: enrolError } = await admin
-      .from("mfa_enrolments")
-      .upsert(
-        { user_id: userId, enrolled_at: new Date().toISOString() },
-        { onConflict: "user_id" },
-      );
-    if (enrolError) {
-      return { error: GENERIC };
-    }
-    const { error: codesError } = await admin.from("recovery_code_hashes").insert(
-      pairs.map((p) => ({
-        user_id: userId,
-        algo: "argon2id",
-        code_hash: p.hash,
-        used_at: null,
-        reset_batch: null,
-      })),
-    );
-    if (codesError) {
-      return { error: GENERIC };
-    }
-  } catch {
-    return { error: GENERIC };
-  }
-  return { codes: pairs.map((p) => p.code) };
+  redirect(`/enrol-mfa/complete?factor=${encodeURIComponent(factorId)}`);
 }
 
 export async function finishEnrol(): Promise<void> {

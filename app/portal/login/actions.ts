@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { validateLogin } from "@/lib/auth/validation";
+import { hasStaffRole, isMfaEnrolled } from "@/lib/auth/staff-role";
 import { isLocked } from "@/lib/auth/lockout";
 
 export interface LoginState {
@@ -79,12 +80,25 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
     return { error: GENERIC };
   }
   const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithPassword(parsed.value);
-  if (error) {
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.signInWithPassword(parsed.value);
+  if (error || !user) {
     await writeLockout(parsed.value.email);
     return { error: GENERIC };
   }
   await clearLockout(parsed.value.email);
+  // Route server-side (see ia-staff login action): the action-initiated
+  // navigation must already point at /enrol-mfa for unenrolled staff-role
+  // holders instead of relying on the middleware bounce alone.
+  try {
+    if ((await hasStaffRole(user.id)) && !(await isMfaEnrolled(user.id))) {
+      redirect("/enrol-mfa");
+    }
+  } catch {
+    redirect("/enrol-mfa");
+  }
   redirect("/portal");
 }
 
