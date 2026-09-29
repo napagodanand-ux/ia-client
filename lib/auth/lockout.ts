@@ -1,7 +1,7 @@
 /**
  * Lockout transition table (W2 / REQ-BP-05-04, A-15 carve-out).
  * Pure logic — unit-tested as the semantic spec. Production writes go through
- * the atomic private.record_login_failure RPC (read-modify-write in the action
+ * the atomic public.record_login_failure RPC (read-modify-write in the action
  * loses updates under concurrency — proven live). Semantics must stay
  * identical in both places: change both, re-run the concurrent probe.
  */
@@ -56,7 +56,7 @@ export function nextFailState(row: LockoutRow | null, now: number): FailOutcome 
     fail_count,
     window_start: row.window_start,
     // Lock only on crossing; normalize any expired value to NULL (mirrors
-    // private.record_login_failure — change both, re-run the concurrent probe).
+    // public.record_login_failure — change both, re-run the concurrent probe).
     locked_until:
       fail_count >= MAX_FAILS
         ? new Date(now + LOCK_MS).toISOString()

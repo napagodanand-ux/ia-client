@@ -26,7 +26,7 @@ jobs:
       - name: bundle secret grep (.next)
         run: bash scripts/bundle-grep-check.sh .next
       - name: banned-copy literals
-        run: bash scripts/banned-copy-check.sh banned-copy/banned-literals.txt app components lib
+        run: bash scripts/banned-copy-check.sh banned-copy/banned-literals.txt app components lib middleware.ts
       - name: install ripgrep (banned-copy gates)
         run: |
           if ! command -v rg >/dev/null 2>&1; then
@@ -41,7 +41,7 @@ jobs:
             echo "BANNED-COPY-REGEX: rg missing (CI FAIL)" >&2
             exit 2
           fi
-          rg --pcre2 -in -f banned-copy/banned-regex.txt app components lib
+          rg --pcre2 -in -f banned-copy/banned-regex.txt app components lib middleware.ts
           rc=$?
           if [ $rc -eq 0 ]; then
             echo "BANNED-COPY-REGEX: match found (CI FAIL)" >&2

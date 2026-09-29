@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getSupabaseEnv } from "./lib/supabase/env";
 import { updateSession } from "./lib/supabase/middleware";
 import { hasStaffRole, isMfaEnrolled } from "./lib/auth/staff-role";
+import { isEnrolPath } from "./lib/auth/enrol-path";
 
 const PORTAL_LOGIN_PATH = "/portal/login";
 const PORTAL_HOME_PATH = "/portal";
@@ -34,7 +35,10 @@ export async function middleware(request: NextRequest) {
 
   const isPortalLogin = pathname === PORTAL_LOGIN_PATH;
   const isPortalArea = pathname === PORTAL_HOME_PATH || pathname.startsWith("/portal/");
-  const isEnrol = pathname === ENROL_PATH;
+  // The whole enrol subtree (rounds, resume, completion) requires a session
+  // but skips the staff-role gate — an unenrolled user mid-flow must reach
+  // the completion page. Unauthenticated enrol URLs still route to login.
+  const isEnrol = isEnrolPath(pathname);
 
   if (!isPortalArea && !isPortalLogin && !isEnrol) {
     return NextResponse.next();

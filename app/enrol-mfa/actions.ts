@@ -3,7 +3,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { generateRecoveryCodes, type RecoveryCodePair } from "@/lib/auth/recovery-codes";
+import { findCallerTotpFactor } from "@/lib/auth/mfa-factors";
 
 export interface EnrolState {
   factorId?: string;
@@ -15,18 +15,6 @@ export interface EnrolState {
 
 const GENERIC = "Enrolment failed. Start over.";
 
-async function requireUserId(): Promise<string | null> {
-  try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    return user?.id ?? null;
-  } catch {
-    return null;
-  }
-}
-
 /** Best-effort removal of the caller's own UNVERIFIED totp factors (abandoned
  *  setups whose QR was never scanned). Verified factors are never touched. */
 async function cleanupUnverifiedFactors(): Promise<void> {
@@ -36,10 +24,10 @@ async function cleanupUnverifiedFactors(): Promise<void> {
     if (!data) {
       return;
     }
-    for (const f of data.totp) {
-      // NOTE: the wire status for pending factors is "unverified" (observed
-      // live); the client type only names "verified", so match by exclusion.
-      if (f.status !== "verified") {
+    for (const f of data.all) {
+      // NOTE: match by exclusion (see findCallerTotpFactor): unverified
+      // factors never appear in the per-type buckets.
+      if (f.factor_type === "totp" && f.status !== "verified") {
         await supabase.auth.mfa.unenroll({ factorId: f.id });
       }
     }
@@ -84,45 +72,6 @@ export async function enrolmentPageState(): Promise<"start" | "resume" | "done">
   return "start";
 }
 
-async function writeEnrolmentAndCodes(
-  userId: string,
-): Promise<{ codes?: string[]; error?: string }> {
-  let pairs: RecoveryCodePair[];
-  const t0 = Date.now();
-  try {
-    pairs = await generateRecoveryCodes(10);
-  } catch {
-    return { error: GENERIC };
-  }
-  try {
-    const admin = createAdminClient();
-    const { error: enrolError } = await admin
-      .from("mfa_enrolments")
-      .upsert(
-        { user_id: userId, enrolled_at: new Date().toISOString() },
-        { onConflict: "user_id" },
-      );
-    if (enrolError) {
-      return { error: GENERIC };
-    }
-    const { error: codesError } = await admin.from("recovery_code_hashes").insert(
-      pairs.map((p) => ({
-        user_id: userId,
-        algo: "argon2id",
-        code_hash: p.hash,
-        used_at: null,
-        reset_batch: null,
-      })),
-    );
-    if (codesError) {
-      return { error: GENERIC };
-    }
-  } catch {
-    return { error: GENERIC };
-  }
-  return { codes: pairs.map((p) => p.code) };
-}
-
 /**
  * Interrupted-enrolment verify: one fresh code against the already verified
  * factor, then redirect to completion (redirect-based delivery — see
@@ -137,7 +86,7 @@ export async function resumeEnrolment(_prev: EnrolState, formData: FormData): Pr
   try {
     const supabase = await createClient();
     const { data: factors, error: listError } = await supabase.auth.mfa.listFactors();
-    const factor = factors?.totp.find((f) => f.status === "verified");
+    const factor = factors?.all.find((f) => f.factor_type === "totp" && f.status === "verified");
     if (listError || !factor) {
       return { error: GENERIC };
     }
@@ -228,20 +177,22 @@ async function hasVerifiedTotp(): Promise<boolean> {
     if (error || !data) {
       return false;
     }
-    return data.totp.some((f) => f.status === "verified");
+    return data.all.some((f) => f.factor_type === "totp" && f.status === "verified");
   } catch {
     return false;
   }
 }
 
 /** Fetch the caller's factor by id; null unless it exists, is TOTP, and is
- *  caller-owned. Verified-status is checked by callers that need it. */
+ *  caller-owned. Verified-status is checked by callers that need it.
+ *  Selection semantics live in findCallerTotpFactor (staff
+ *  app/enrol-mfa/actions.ts reference: per-type buckets omit unverified
+ *  factors, so the lookup searches `.all`). */
 async function getOwnFactor(factorId: string) {
   try {
     const supabase = await createClient();
     const { data } = await supabase.auth.mfa.listFactors();
-    const factor = data?.totp.find((f) => f.id === factorId);
-    return factor ?? null;
+    return findCallerTotpFactor(data, factorId);
   } catch {
     return null;
   }

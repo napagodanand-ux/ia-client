@@ -39,7 +39,7 @@ async function readLockout(email: string) {
 }
 
 async function writeLockout(email: string) {
-  // Atomic server-side increment (private.record_login_failure): concurrent
+  // Atomic server-side increment (public.record_login_failure): concurrent
   // failures serialize on the row lock, so no increment is ever lost.
   // Semantics mirror lib/auth/lockout.ts nextFailState — change both.
   try {

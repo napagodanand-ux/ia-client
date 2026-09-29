@@ -25,7 +25,10 @@ async function completeForFactor(
       return { error: GENERIC };
     }
     const { data: factors } = await supabase.auth.mfa.listFactors();
-    const factor = factors?.totp.find((f) => f.id === factorId && f.status === "verified");
+    // NOTE: search `.all` (per-type buckets omit unverified factors).
+    const factor = factors?.all.find(
+      (f) => f.id === factorId && f.factor_type === "totp" && f.status === "verified",
+    );
     if (!factor) {
       return { error: GENERIC };
     }
